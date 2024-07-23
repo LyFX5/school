@@ -1,0 +1,646 @@
+<!DOCTYPE html>
+<html class="i-ua_js_yes i-ua_css_standard i-ua_svg_yes i-ua_inlinesvg_yes i-ua_placeholder_yes" lang="ru"><script type="text/javascript">try {
+(function injectPageScriptAPI(scriptName, shouldOverrideWebSocket, shouldOverrideWebRTC, isInjected) { 
+
+    'use strict';
+
+    /**
+     * If script have been injected into a frame via contentWindow then we can simply take the copy of messageChannel left for us by parent document
+     * Otherwise creates new message channel that sends a message to the content-script to check if request should be allowed or not.
+     */
+    var messageChannel = isInjected ? window[scriptName] : (function () {
+
+        // Save original postMessage and addEventListener functions to prevent webpage from tampering both.
+        var postMessage = window.postMessage;
+        var addEventListener = window.addEventListener;
+
+        // Current request ID (incremented every time we send a new message)
+        var currentRequestId = 0;
+        var requestsMap = {};
+
+        /**
+         * Handles messages sent from the content script back to the page script.
+         *
+         * @param event Event with necessary data
+         */
+        var onMessageReceived = function (event) {
+
+            if (!event.data || !event.data.direction || event.data.direction !== "to-page-script@abu") {
+                return;
+            }
+
+            var requestData = requestsMap[event.data.requestId];
+            if (requestData) {
+                var wrapper = requestData.wrapper;
+                requestData.onResponseReceived(wrapper, event.data.block);
+                delete requestsMap[event.data.requestId];
+            }
+        };
+
+        /**
+         * @param url                The URL to which wrapped object is willing to connect
+         * @param requestType        Request type ( WEBSOCKET or WEBRTC)
+         * @param wrapper            WebSocket wrapper instance
+         * @param onResponseReceived Called when response is received
+         */
+        var sendMessage = function (url, requestType, wrapper, onResponseReceived) {
+
+            if (currentRequestId === 0) {
+                // Subscribe to response when this method is called for the first time
+                addEventListener.call(window, "message", onMessageReceived, false);
+            }
+
+            var requestId = ++currentRequestId;
+            requestsMap[requestId] = {
+                wrapper: wrapper,
+                onResponseReceived: onResponseReceived
+            };
+
+            var message = {
+                requestId: requestId,
+                direction: 'from-page-script@abu',
+                elementUrl: url,
+                documentUrl: document.URL,
+                requestType: requestType
+            };
+
+            // Send a message to the background page to check if the request should be blocked
+            postMessage.call(window, message, "*");
+        };
+
+        return {
+            sendMessage: sendMessage
+        };
+
+    })();
+
+    /*
+     * In some case Chrome won't run content scripts inside frames.
+     * So we have to intercept access to contentWindow/contentDocument and manually inject wrapper script into this context
+     *
+     * Based on: https://github.com/adblockplus/adblockpluschrome/commit/1aabfb3346dc0821c52dd9e97f7d61b8c99cd707
+     */
+    var injectedToString = Function.prototype.toString.bind(injectPageScriptAPI);
+
+    var injectedFramesAdd;
+    var injectedFramesHas;
+    if (window.WeakSet instanceof Function) {
+        var injectedFrames = new WeakSet();
+        injectedFramesAdd = WeakSet.prototype.add.bind(injectedFrames);
+        injectedFramesHas = WeakSet.prototype.has.bind(injectedFrames);
+    } else {
+        var frames = [];
+        injectedFramesAdd = function (el) {
+            if (frames.indexOf(el) < 0) {
+                frames.push(el);
+            }
+        };
+        injectedFramesHas = function (el) {
+            return frames.indexOf(el) >= 0;
+        };
+    }
+
+    /**
+     * Injects wrapper's script into passed window
+     * @param contentWindow Frame's content window
+     */
+    function injectPageScriptAPIInWindow(contentWindow) {
+        try {
+            if (contentWindow && !injectedFramesHas(contentWindow)) {
+                injectedFramesAdd(contentWindow);
+                contentWindow[scriptName] = messageChannel; // Left message channel for the injected script
+                var args = "'" + scriptName + "', " + shouldOverrideWebSocket + ", " + shouldOverrideWebRTC + ", true";
+                contentWindow.eval("(" + injectedToString() + ")(" + args + ");");
+                delete contentWindow[scriptName];
+            }
+        } catch (e) {
+        }
+    }
+
+    /**
+     * Overrides access to contentWindow/contentDocument for the passed HTML element's interface (iframe, frame, object)
+     * If the content of one of these objects is requested we will inject our wrapper script.
+     * @param iface HTML element's interface
+     */
+    function overrideContentAccess(iface) {
+
+        var contentWindowDescriptor = Object.getOwnPropertyDescriptor(iface.prototype, "contentWindow");
+        var contentDocumentDescriptor = Object.getOwnPropertyDescriptor(iface.prototype, "contentDocument");
+
+        // Apparently in HTMLObjectElement.prototype.contentWindow does not exist
+        // in older versions of Chrome such as 42.
+        if (!contentWindowDescriptor) {
+            return;
+        }
+
+        var getContentWindow = Function.prototype.call.bind(contentWindowDescriptor.get);
+        var getContentDocument = Function.prototype.call.bind(contentDocumentDescriptor.get);
+
+        contentWindowDescriptor.get = function () {
+            var contentWindow = getContentWindow(this);
+            injectPageScriptAPIInWindow(contentWindow);
+            return contentWindow;
+        };
+        contentDocumentDescriptor.get = function () {
+            injectPageScriptAPIInWindow(getContentWindow(this));
+            return getContentDocument(this);
+        };
+
+        Object.defineProperty(iface.prototype, "contentWindow", contentWindowDescriptor);
+        Object.defineProperty(iface.prototype, "contentDocument", contentDocumentDescriptor);
+    }
+
+    var interfaces = [HTMLFrameElement, HTMLIFrameElement, HTMLObjectElement];
+    for (var i = 0; i < interfaces.length; i++) {
+        overrideContentAccess(interfaces[i]);
+    }
+
+    /**
+     * Defines properties in destination object
+     * @param src Source object
+     * @param dest Destination object
+     * @param properties Properties to copy
+     */
+    var copyProperties = function (src, dest, properties) {
+        for (var i = 0; i < properties.length; i++) {
+            var prop = properties[i];
+            var descriptor = Object.getOwnPropertyDescriptor(src, prop);
+            // Passed property may be undefined
+            if (descriptor) {
+                Object.defineProperty(dest, prop, descriptor);
+            }
+        }
+    };
+
+    /**
+     * Check request by sending message to content script
+     * @param url URL to block
+     * @param type Request type
+     * @param callback Result callback
+     */
+    var checkRequest = function (url, type, callback) {
+        messageChannel.sendMessage(url, type, this, function (wrapper, blockConnection) {
+            callback(blockConnection);
+        });
+    };
+
+    /**
+     * The function overrides window.WebSocket with our wrapper, that will check url with filters through messaging with content-script.
+     *
+     * IMPORTANT NOTE:
+     * This function is first loaded as a content script. The only purpose of it is to call
+     * the "toString" method and use resulting string as a text content for injected script.
+     */
+    var overrideWebSocket = function () { 
+
+        if (!(window.WebSocket instanceof Function)) {
+            return;
+        }
+
+        /**
+         * WebSocket wrapper implementation.
+         * https://github.com/AdguardTeam/AdguardBrowserExtension/issues/349
+         *
+         * Based on:
+         * https://github.com/adblockplus/adblockpluschrome/commit/457a336ee55a433217c3ffe5d363e5c6980f26f4
+         */
+
+        /**
+         * As far as possible we must track everything we use that could be sabotaged by the website later in order to circumvent us.
+         */
+        var RealWebSocket = WebSocket;
+        var closeWebSocket = Function.prototype.call.bind(RealWebSocket.prototype.close);
+
+        function WrappedWebSocket(url, protocols) {
+            // Throw correct exceptions if the constructor is used improperly.
+            if (!(this instanceof WrappedWebSocket)) {
+                return RealWebSocket();
+            }
+            if (arguments.length < 1) {
+                return new RealWebSocket();
+            }
+
+            var websocket = new RealWebSocket(url, protocols);
+
+            // This is the key point: checking if this WS should be blocked or not
+            // Don't forget that the type of 'websocket.url' is String, but 'url 'parameter might have another type.
+            checkRequest(websocket.url, 'WEBSOCKET', function (blocked) {
+                if (blocked) {
+                    closeWebSocket(websocket);
+                }
+            });
+
+            return websocket;
+        }
+
+        // https://github.com/AdguardTeam/AdguardBrowserExtension/issues/488
+        WrappedWebSocket.prototype = RealWebSocket.prototype;
+        window.WebSocket = WrappedWebSocket.bind();
+
+        copyProperties(RealWebSocket, WebSocket, ["CONNECTING", "OPEN", "CLOSING", "CLOSED", "name", "prototype"]);
+
+        RealWebSocket.prototype.constructor = WebSocket;
+
+    };
+
+    /**
+     * The function overrides window.RTCPeerConnection with our wrapper, that will check ice servers URLs with filters through messaging with content-script.
+     *
+     * IMPORTANT NOTE:
+     * This function is first loaded as a content script. The only purpose of it is to call
+     * the "toString" method and use resulting string as a text content for injected script.
+     */
+    var overrideWebRTC = function () { 
+
+
+        if (!(window.RTCPeerConnection instanceof Function) &&
+            !(window.webkitRTCPeerConnection instanceof Function)) {
+            return;
+        }
+
+        /**
+         * RTCPeerConnection wrapper implementation.
+         * https://github.com/AdguardTeam/AdguardBrowserExtension/issues/588
+         *
+         * Based on:
+         * https://github.com/adblockplus/adblockpluschrome/commit/af0585137be19011eace1cf68bf61eed2e6db974
+         *
+         * Chromium webRequest API doesn't allow the blocking of WebRTC connections
+         * https://bugs.chromium.org/p/chromium/issues/detail?id=707683
+         */
+
+        var RealRTCPeerConnection = window.RTCPeerConnection || window.webkitRTCPeerConnection;
+        var closeRTCPeerConnection = Function.prototype.call.bind(RealRTCPeerConnection.prototype.close);
+
+        var RealArray = Array;
+        var RealString = String;
+        var createObject = Object.create;
+        var defineProperty = Object.defineProperty;
+
+        /**
+         * Convert passed url to string
+         * @param url URL
+         * @returns {string}
+         */
+        function urlToString(url) {
+            if (typeof url !== "undefined") {
+                return RealString(url);
+            }
+        }
+
+        /**
+         * Creates new immutable array from original with some transform function
+         * @param original
+         * @param transform
+         * @returns {*}
+         */
+        function safeCopyArray(original, transform) {
+
+            if (original === null || typeof original !== "object") {
+                return original;
+            }
+
+            var immutable = RealArray(original.length);
+            for (var i = 0; i < immutable.length; i++) {
+                defineProperty(immutable, i, {
+                    configurable: false, enumerable: false, writable: false,
+                    value: transform(original[i])
+                });
+            }
+            defineProperty(immutable, "length", {
+                configurable: false, enumerable: false, writable: false,
+                value: immutable.length
+            });
+            return immutable;
+        }
+
+        /**
+         * Protect configuration from mutations
+         * @param configuration RTCPeerConnection configuration object
+         * @returns {*}
+         */
+        function protectConfiguration(configuration) {
+
+            if (configuration === null || typeof configuration !== "object") {
+                return configuration;
+            }
+
+            var iceServers = safeCopyArray(
+                configuration.iceServers,
+                function (iceServer) {
+
+                    var url = iceServer.url;
+                    var urls = iceServer.urls;
+
+                    // RTCPeerConnection doesn't iterate through pseudo Arrays of urls.
+                    if (typeof urls !== "undefined" && !(urls instanceof RealArray)) {
+                        urls = [urls];
+                    }
+
+                    return createObject(iceServer, {
+                        url: {
+                            configurable: false, enumerable: false, writable: false,
+                            value: urlToString(url)
+                        },
+                        urls: {
+                            configurable: false, enumerable: false, writable: false,
+                            value: safeCopyArray(urls, urlToString)
+                        }
+                    });
+                }
+            );
+
+            return createObject(configuration, {
+                iceServers: {
+                    configurable: false, enumerable: false, writable: false,
+                    value: iceServers
+                }
+            });
+        }
+
+        /**
+         * Check WebRTC connection's URL and close if it's blocked by rule
+         * @param connection Connection
+         * @param url URL to check
+         */
+        function checkWebRTCRequest(connection, url) {
+            checkRequest(url, 'WEBRTC', function (blocked) {
+                if (blocked) {
+                    try {
+                        closeRTCPeerConnection(connection);
+                    } catch (e) {
+                        // Ignore exceptions
+                    }
+                }
+            });
+        }
+
+        /**
+         * Check each URL of ice server in configuration for blocking.
+         *
+         * @param connection RTCPeerConnection
+         * @param configuration Configuration for RTCPeerConnection
+         * https://developer.mozilla.org/en-US/docs/Web/API/RTCConfiguration
+         */
+        function checkConfiguration(connection, configuration) {
+
+            if (!configuration || !configuration.iceServers) {
+                return;
+            }
+
+            var iceServers = configuration.iceServers;
+            for (var i = 0; i < iceServers.length; i++) {
+
+                var iceServer = iceServers[i];
+                if (!iceServer) {
+                    continue;
+                }
+
+                if (iceServer.url) {
+                    checkWebRTCRequest(connection, iceServer.url);
+                }
+
+                if (iceServer.urls) {
+                    for (var j = 0; j < iceServer.urls.length; j++) {
+                        checkWebRTCRequest(connection, iceServer.urls[j]);
+                    }
+                }
+            }
+        }
+
+        /**
+         * Overrides setConfiguration method
+         * https://developer.mozilla.org/en-US/docs/Web/API/RTCPeerConnection/setConfiguration
+         */
+        if (RealRTCPeerConnection.prototype.setConfiguration) {
+
+            var realSetConfiguration = Function.prototype.call.bind(RealRTCPeerConnection.prototype.setConfiguration);
+
+            RealRTCPeerConnection.prototype.setConfiguration = function (configuration) {
+                configuration = protectConfiguration(configuration);
+                // Call the real method first, so that validates the configuration
+                realSetConfiguration(this, configuration);
+                checkConfiguration(this, configuration);
+            };
+        }
+
+        function WrappedRTCPeerConnection(configuration, arg) {
+
+            if (!(this instanceof WrappedRTCPeerConnection)) {
+                return RealRTCPeerConnection();
+            }
+
+            configuration = protectConfiguration(configuration);
+
+            /**
+             * The old webkitRTCPeerConnection constructor takes an optional second argument and we must pass it.
+             */
+            var connection = new RealRTCPeerConnection(configuration, arg);
+            checkConfiguration(connection, configuration);
+            return connection;
+        }
+
+        WrappedRTCPeerConnection.prototype = RealRTCPeerConnection.prototype;
+
+        var boundWrappedRTCPeerConnection = WrappedRTCPeerConnection.bind();
+        copyProperties(RealRTCPeerConnection, boundWrappedRTCPeerConnection, ["caller", "generateCertificate", "name", "prototype"]);
+        RealRTCPeerConnection.prototype.constructor = boundWrappedRTCPeerConnection;
+
+        if ("RTCPeerConnection" in window) {
+            window.RTCPeerConnection = boundWrappedRTCPeerConnection;
+        }
+        if ("webkitRTCPeerConnection" in window) {
+            window.webkitRTCPeerConnection = boundWrappedRTCPeerConnection;
+        }
+    };
+
+    if (shouldOverrideWebSocket) {
+        overrideWebSocket();
+    }
+
+    if (shouldOverrideWebRTC) {
+        overrideWebRTC();
+    }
+})('wrapper-script-7992173105430919', false, true);
+} catch (ex) { console.error('Error executing AG js: ' + ex); }
+(function () {
+            var current = document.currentScript;
+            var parent = current && current.parentNode;
+            if (parent) {
+                parent.removeChild(current);
+            }
+        })();</script><head>
+<meta http-equiv="content-type" content="text/html; charset=UTF-8"><meta charset="utf-8"><meta http-equiv="X-UA-Compatible" content="IE=edge"><title>N. Сильный ИИ близко... — Python, CSC, неделя 1 — Яндекс.Контест</title><link rel="shortcut icon" href="https://contest.yandex.ru/favicon.ico?1660464898402"><script nonce="">;(function(d,e,c,r){e=d.documentElement;c="className";r="replace";e[c]=e[c][r]("i-ua_js_no","i-ua_js_yes");if(d.compatMode!="CSS1Compat")e[c]=e[c][r]("i-ua_css_standart","i-ua_css_quirks")})(document);;(function(d,e,c,n,w,v,f){e=d.documentElement;c="className";n="createElementNS";f="firstChild";w="http://www.w3.org/2000/svg";e[c]+=" i-ua_svg_"+(!!d[n]&&!!d[n](w,"svg").createSVGRect?"yes":"no");v=d.createElement("div");v.innerHTML="<svg/>";e[c]+=" i-ua_inlinesvg_"+((v[f]&&v[f].namespaceURI)==w?"yes":"no");})(document);;(function(d,e,p){e=d.documentElement;p="placeholder";e.className+=" i-ua_"+p+(p in d.createElement("input")?"_yes":"_no")})(document);</script><link rel="stylesheet" href="N.%20%D0%A1%D0%B8%D0%BB%D1%8C%D0%BD%D1%8B%D0%B9%20%D0%98%D0%98%20%D0%B1%D0%BB%D0%B8%D0%B7%D0%BA%D0%BE...%20%E2%80%94%20Python,%20CSC,%20%D0%BD%D0%B5%D0%B4%D0%B5%D0%BB%D1%8F%201%20%E2%80%94%20%D0%AF%D0%BD%D0%B4%D0%B5%D0%BA%D1%81_files/highlighter.css"><link rel="stylesheet" href="N.%20%D0%A1%D0%B8%D0%BB%D1%8C%D0%BD%D1%8B%D0%B9%20%D0%98%D0%98%20%D0%B1%D0%BB%D0%B8%D0%B7%D0%BA%D0%BE...%20%E2%80%94%20Python,%20CSC,%20%D0%BD%D0%B5%D0%B4%D0%B5%D0%BB%D1%8F%201%20%E2%80%94%20%D0%AF%D0%BD%D0%B4%D0%B5%D0%BA%D1%81_files/_problems.css"><!--[if IE 6]><link rel="stylesheet" href="//yastatic.net/s3/contest/static/contest-www/0.194.0-68735f9df1/bundles/problems/_problems.ie6.css"/><![endif]--><!--[if IE 7]><link rel="stylesheet" href="//yastatic.net/s3/contest/static/contest-www/0.194.0-68735f9df1/bundles/problems/_problems.ie7.css"/><![endif]--><!--[if IE 8]><link rel="stylesheet" href="//yastatic.net/s3/contest/static/contest-www/0.194.0-68735f9df1/bundles/problems/_problems.ie8.css"/><![endif]--><!--[if IE 9]><link rel="stylesheet" href="//yastatic.net/s3/contest/static/contest-www/0.194.0-68735f9df1/bundles/problems/_problems.ie9.css"/><![endif]--><link rel="stylesheet" href="N.%20%D0%A1%D0%B8%D0%BB%D1%8C%D0%BD%D1%8B%D0%B9%20%D0%98%D0%98%20%D0%B1%D0%BB%D0%B8%D0%B7%D0%BA%D0%BE...%20%E2%80%94%20Python,%20CSC,%20%D0%BD%D0%B5%D0%B4%D0%B5%D0%BB%D1%8F%201%20%E2%80%94%20%D0%AF%D0%BD%D0%B4%D0%B5%D0%BA%D1%81_files/_problems.print.css" media="print"><script src="N.%20%D0%A1%D0%B8%D0%BB%D1%8C%D0%BD%D1%8B%D0%B9%20%D0%98%D0%98%20%D0%B1%D0%BB%D0%B8%D0%B7%D0%BA%D0%BE...%20%E2%80%94%20Python,%20CSC,%20%D0%BD%D0%B5%D0%B4%D0%B5%D0%BB%D1%8F%201%20%E2%80%94%20%D0%AF%D0%BD%D0%B4%D0%B5%D0%BA%D1%81_files/jquery.min.js" nonce=""></script><script src="N.%20%D0%A1%D0%B8%D0%BB%D1%8C%D0%BD%D1%8B%D0%B9%20%D0%98%D0%98%20%D0%B1%D0%BB%D0%B8%D0%B7%D0%BA%D0%BE...%20%E2%80%94%20Python,%20CSC,%20%D0%BD%D0%B5%D0%B4%D0%B5%D0%BB%D1%8F%201%20%E2%80%94%20%D0%AF%D0%BD%D0%B4%D0%B5%D0%BA%D1%81_files/_problems.ru.js" nonce=""></script><meta name="description" content="Яндекс.Контест это сервис, позволяющий программистам со всего мира соревноваться на предложенных задачах, а преподавателям и авторам задач -- размещать задания и серии заданий и предоставлять доступ пользователям через интернет."><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="N.%20%D0%A1%D0%B8%D0%BB%D1%8C%D0%BD%D1%8B%D0%B9%20%D0%98%D0%98%20%D0%B1%D0%BB%D0%B8%D0%B7%D0%BA%D0%BE...%20%E2%80%94%20Python,%20CSC,%20%D0%BD%D0%B5%D0%B4%D0%B5%D0%BB%D1%8F%201%20%E2%80%94%20%D0%AF%D0%BD%D0%B4%D0%B5%D0%BA%D1%81_files/katex.min.css"><script nonce="">window.MathJax = { AssistiveMML: { disabled: true }, showMathMenu: false };</script><script src="N.%20%D0%A1%D0%B8%D0%BB%D1%8C%D0%BD%D1%8B%D0%B9%20%D0%98%D0%98%20%D0%B1%D0%BB%D0%B8%D0%B7%D0%BA%D0%BE...%20%E2%80%94%20Python,%20CSC,%20%D0%BD%D0%B5%D0%B4%D0%B5%D0%BB%D1%8F%201%20%E2%80%94%20%D0%AF%D0%BD%D0%B4%D0%B5%D0%BA%D1%81_files/MathJax.js" nonce=""></script><script src="N.%20%D0%A1%D0%B8%D0%BB%D1%8C%D0%BD%D1%8B%D0%B9%20%D0%98%D0%98%20%D0%B1%D0%BB%D0%B8%D0%B7%D0%BA%D0%BE...%20%E2%80%94%20Python,%20CSC,%20%D0%BD%D0%B5%D0%B4%D0%B5%D0%BB%D1%8F%201%20%E2%80%94%20%D0%AF%D0%BD%D0%B4%D0%B5%D0%BA%D1%81_files/highlighter.js" nonce=""></script><style type="text/css">.MathJax_Hover_Frame {border-radius: .25em; -webkit-border-radius: .25em; -moz-border-radius: .25em; -khtml-border-radius: .25em; box-shadow: 0px 0px 15px #83A; -webkit-box-shadow: 0px 0px 15px #83A; -moz-box-shadow: 0px 0px 15px #83A; -khtml-box-shadow: 0px 0px 15px #83A; border: 1px solid #A6D ! important; display: inline-block; position: absolute}
+.MathJax_Menu_Button .MathJax_Hover_Arrow {position: absolute; cursor: pointer; display: inline-block; border: 2px solid #AAA; border-radius: 4px; -webkit-border-radius: 4px; -moz-border-radius: 4px; -khtml-border-radius: 4px; font-family: 'Courier New',Courier; font-size: 9px; color: #F0F0F0}
+.MathJax_Menu_Button .MathJax_Hover_Arrow span {display: block; background-color: #AAA; border: 1px solid; border-radius: 3px; line-height: 0; padding: 4px}
+.MathJax_Hover_Arrow:hover {color: white!important; border: 2px solid #CCC!important}
+.MathJax_Hover_Arrow:hover span {background-color: #CCC!important}
+</style><style type="text/css">#MathJax_About {position: fixed; left: 50%; width: auto; text-align: center; border: 3px outset; padding: 1em 2em; background-color: #DDDDDD; color: black; cursor: default; font-family: message-box; font-size: 120%; font-style: normal; text-indent: 0; text-transform: none; line-height: normal; letter-spacing: normal; word-spacing: normal; word-wrap: normal; white-space: nowrap; float: none; z-index: 201; border-radius: 15px; -webkit-border-radius: 15px; -moz-border-radius: 15px; -khtml-border-radius: 15px; box-shadow: 0px 10px 20px #808080; -webkit-box-shadow: 0px 10px 20px #808080; -moz-box-shadow: 0px 10px 20px #808080; -khtml-box-shadow: 0px 10px 20px #808080; filter: progid:DXImageTransform.Microsoft.dropshadow(OffX=2, OffY=2, Color='gray', Positive='true')}
+#MathJax_About.MathJax_MousePost {outline: none}
+.MathJax_Menu {position: absolute; background-color: white; color: black; width: auto; padding: 5px 0px; border: 1px solid #CCCCCC; margin: 0; cursor: default; font: menu; text-align: left; text-indent: 0; text-transform: none; line-height: normal; letter-spacing: normal; word-spacing: normal; word-wrap: normal; white-space: nowrap; float: none; z-index: 201; border-radius: 5px; -webkit-border-radius: 5px; -moz-border-radius: 5px; -khtml-border-radius: 5px; box-shadow: 0px 10px 20px #808080; -webkit-box-shadow: 0px 10px 20px #808080; -moz-box-shadow: 0px 10px 20px #808080; -khtml-box-shadow: 0px 10px 20px #808080; filter: progid:DXImageTransform.Microsoft.dropshadow(OffX=2, OffY=2, Color='gray', Positive='true')}
+.MathJax_MenuItem {padding: 1px 2em; background: transparent}
+.MathJax_MenuArrow {position: absolute; right: .5em; padding-top: .25em; color: #666666; font-size: .75em}
+.MathJax_MenuActive .MathJax_MenuArrow {color: white}
+.MathJax_MenuArrow.RTL {left: .5em; right: auto}
+.MathJax_MenuCheck {position: absolute; left: .7em}
+.MathJax_MenuCheck.RTL {right: .7em; left: auto}
+.MathJax_MenuRadioCheck {position: absolute; left: .7em}
+.MathJax_MenuRadioCheck.RTL {right: .7em; left: auto}
+.MathJax_MenuLabel {padding: 1px 2em 3px 1.33em; font-style: italic}
+.MathJax_MenuRule {border-top: 1px solid #DDDDDD; margin: 4px 3px}
+.MathJax_MenuDisabled {color: GrayText}
+.MathJax_MenuActive {background-color: #606872; color: white}
+.MathJax_MenuDisabled:focus, .MathJax_MenuLabel:focus {background-color: #E8E8E8}
+.MathJax_ContextMenu:focus {outline: none}
+.MathJax_ContextMenu .MathJax_MenuItem:focus {outline: none}
+#MathJax_AboutClose {top: .2em; right: .2em}
+.MathJax_Menu .MathJax_MenuClose {top: -10px; left: -10px}
+.MathJax_MenuClose {position: absolute; cursor: pointer; display: inline-block; border: 2px solid #AAA; border-radius: 18px; -webkit-border-radius: 18px; -moz-border-radius: 18px; -khtml-border-radius: 18px; font-family: 'Courier New',Courier; font-size: 24px; color: #F0F0F0}
+.MathJax_MenuClose span {display: block; background-color: #AAA; border: 1.5px solid; border-radius: 18px; -webkit-border-radius: 18px; -moz-border-radius: 18px; -khtml-border-radius: 18px; line-height: 0; padding: 8px 0 6px}
+.MathJax_MenuClose:hover {color: white!important; border: 2px solid #CCC!important}
+.MathJax_MenuClose:hover span {background-color: #CCC!important}
+.MathJax_MenuClose:hover:focus {outline: none}
+</style><style type="text/css">.MathJax_Preview .MJXf-math {color: inherit!important}
+</style><style type="text/css">.MJX_Assistive_MathML {position: absolute!important; top: 0; left: 0; clip: rect(1px, 1px, 1px, 1px); padding: 1px 0 0 0!important; border: 0!important; height: 1px!important; width: 1px!important; overflow: hidden!important; display: block!important; -webkit-touch-callout: none; -webkit-user-select: none; -khtml-user-select: none; -moz-user-select: none; -ms-user-select: none; user-select: none}
+.MJX_Assistive_MathML.MJX_Assistive_MathML_Block {width: 100%!important}
+</style><style type="text/css">#MathJax_Zoom {position: absolute; background-color: #F0F0F0; overflow: auto; display: block; z-index: 301; padding: .5em; border: 1px solid black; margin: 0; font-weight: normal; font-style: normal; text-align: left; text-indent: 0; text-transform: none; line-height: normal; letter-spacing: normal; word-spacing: normal; word-wrap: normal; white-space: nowrap; float: none; -webkit-box-sizing: content-box; -moz-box-sizing: content-box; box-sizing: content-box; box-shadow: 5px 5px 15px #AAAAAA; -webkit-box-shadow: 5px 5px 15px #AAAAAA; -moz-box-shadow: 5px 5px 15px #AAAAAA; -khtml-box-shadow: 5px 5px 15px #AAAAAA; filter: progid:DXImageTransform.Microsoft.dropshadow(OffX=2, OffY=2, Color='gray', Positive='true')}
+#MathJax_ZoomOverlay {position: absolute; left: 0; top: 0; z-index: 300; display: inline-block; width: 100%; height: 100%; border: 0; padding: 0; margin: 0; background-color: white; opacity: 0; filter: alpha(opacity=0)}
+#MathJax_ZoomFrame {position: relative; display: inline-block; height: 0; width: 0}
+#MathJax_ZoomEventTrap {position: absolute; left: 0; top: 0; z-index: 302; display: inline-block; border: 0; padding: 0; margin: 0; background-color: white; opacity: 0; filter: alpha(opacity=0)}
+</style><style type="text/css">.MathJax_Preview {color: #888}
+#MathJax_Message {position: fixed; left: 1px; bottom: 2px; background-color: #E6E6E6; border: 1px solid #959595; margin: 0px; padding: 2px 8px; z-index: 102; color: black; font-size: 80%; width: auto; white-space: nowrap}
+#MathJax_MSIE_Frame {position: absolute; top: 0; left: 0; width: 0px; z-index: 101; border: 0px; margin: 0px; padding: 0px}
+.MathJax_Error {color: #CC0000; font-style: italic}
+</style><style type="text/css">.MJXp-script {font-size: .8em}
+.MJXp-right {-webkit-transform-origin: right; -moz-transform-origin: right; -ms-transform-origin: right; -o-transform-origin: right; transform-origin: right}
+.MJXp-bold {font-weight: bold}
+.MJXp-italic {font-style: italic}
+.MJXp-scr {font-family: MathJax_Script,'Times New Roman',Times,STIXGeneral,serif}
+.MJXp-frak {font-family: MathJax_Fraktur,'Times New Roman',Times,STIXGeneral,serif}
+.MJXp-sf {font-family: MathJax_SansSerif,'Times New Roman',Times,STIXGeneral,serif}
+.MJXp-cal {font-family: MathJax_Caligraphic,'Times New Roman',Times,STIXGeneral,serif}
+.MJXp-mono {font-family: MathJax_Typewriter,'Times New Roman',Times,STIXGeneral,serif}
+.MJXp-largeop {font-size: 150%}
+.MJXp-largeop.MJXp-int {vertical-align: -.2em}
+.MJXp-math {display: inline-block; line-height: 1.2; text-indent: 0; font-family: 'Times New Roman',Times,STIXGeneral,serif; white-space: nowrap; border-collapse: collapse}
+.MJXp-display {display: block; text-align: center; margin: 1em 0}
+.MJXp-math span {display: inline-block}
+.MJXp-box {display: block!important; text-align: center}
+.MJXp-box:after {content: " "}
+.MJXp-rule {display: block!important; margin-top: .1em}
+.MJXp-char {display: block!important}
+.MJXp-mo {margin: 0 .15em}
+.MJXp-mfrac {margin: 0 .125em; vertical-align: .25em}
+.MJXp-denom {display: inline-table!important; width: 100%}
+.MJXp-denom > * {display: table-row!important}
+.MJXp-surd {vertical-align: top}
+.MJXp-surd > * {display: block!important}
+.MJXp-script-box > *  {display: table!important; height: 50%}
+.MJXp-script-box > * > * {display: table-cell!important; vertical-align: top}
+.MJXp-script-box > *:last-child > * {vertical-align: bottom}
+.MJXp-script-box > * > * > * {display: block!important}
+.MJXp-mphantom {visibility: hidden}
+.MJXp-munderover {display: inline-table!important}
+.MJXp-over {display: inline-block!important; text-align: center}
+.MJXp-over > * {display: block!important}
+.MJXp-munderover > * {display: table-row!important}
+.MJXp-mtable {vertical-align: .25em; margin: 0 .125em}
+.MJXp-mtable > * {display: inline-table!important; vertical-align: middle}
+.MJXp-mtr {display: table-row!important}
+.MJXp-mtd {display: table-cell!important; text-align: center; padding: .5em 0 0 .5em}
+.MJXp-mtr > .MJXp-mtd:first-child {padding-left: 0}
+.MJXp-mtr:first-child > .MJXp-mtd {padding-top: 0}
+.MJXp-mlabeledtr {display: table-row!important}
+.MJXp-mlabeledtr > .MJXp-mtd:first-child {padding-left: 0}
+.MJXp-mlabeledtr:first-child > .MJXp-mtd {padding-top: 0}
+.MJXp-merror {background-color: #FFFF88; color: #CC0000; border: 1px solid #CC0000; padding: 1px 3px; font-style: normal; font-size: 90%}
+.MJXp-scale0 {-webkit-transform: scaleX(.0); -moz-transform: scaleX(.0); -ms-transform: scaleX(.0); -o-transform: scaleX(.0); transform: scaleX(.0)}
+.MJXp-scale1 {-webkit-transform: scaleX(.1); -moz-transform: scaleX(.1); -ms-transform: scaleX(.1); -o-transform: scaleX(.1); transform: scaleX(.1)}
+.MJXp-scale2 {-webkit-transform: scaleX(.2); -moz-transform: scaleX(.2); -ms-transform: scaleX(.2); -o-transform: scaleX(.2); transform: scaleX(.2)}
+.MJXp-scale3 {-webkit-transform: scaleX(.3); -moz-transform: scaleX(.3); -ms-transform: scaleX(.3); -o-transform: scaleX(.3); transform: scaleX(.3)}
+.MJXp-scale4 {-webkit-transform: scaleX(.4); -moz-transform: scaleX(.4); -ms-transform: scaleX(.4); -o-transform: scaleX(.4); transform: scaleX(.4)}
+.MJXp-scale5 {-webkit-transform: scaleX(.5); -moz-transform: scaleX(.5); -ms-transform: scaleX(.5); -o-transform: scaleX(.5); transform: scaleX(.5)}
+.MJXp-scale6 {-webkit-transform: scaleX(.6); -moz-transform: scaleX(.6); -ms-transform: scaleX(.6); -o-transform: scaleX(.6); transform: scaleX(.6)}
+.MJXp-scale7 {-webkit-transform: scaleX(.7); -moz-transform: scaleX(.7); -ms-transform: scaleX(.7); -o-transform: scaleX(.7); transform: scaleX(.7)}
+.MJXp-scale8 {-webkit-transform: scaleX(.8); -moz-transform: scaleX(.8); -ms-transform: scaleX(.8); -o-transform: scaleX(.8); transform: scaleX(.8)}
+.MJXp-scale9 {-webkit-transform: scaleX(.9); -moz-transform: scaleX(.9); -ms-transform: scaleX(.9); -o-transform: scaleX(.9); transform: scaleX(.9)}
+</style></head><body class="b-page b-page__body i-global i-ua i-ua_interaction_yes page i-bem i-global_js_inited i-ua_platform_other i-ua_js_inited page_js_inited" data-bem="{&quot;i-global&quot;:{&quot;lang&quot;:&quot;ru&quot;,&quot;tld&quot;:&quot;ru&quot;,&quot;content-region&quot;:&quot;ru&quot;,&quot;click-host&quot;:&quot;//clck.yandex.ru&quot;,&quot;passport-host&quot;:&quot;https://passport.yandex.ru&quot;,&quot;pass-host&quot;:&quot;pass.yandex.ru&quot;,&quot;social-host&quot;:&quot;social.yandex.ru&quot;,&quot;export-host&quot;:&quot;https://export.yandex.ru&quot;,&quot;login&quot;:&quot;lansner1&quot;,&quot;lego-static-host&quot;:&quot;//yastatic.net/lego/2.10-142&quot;,&quot;id&quot;:&quot;contest&quot;,&quot;displayName&quot;:&quot;lansner1&quot;,&quot;yandexuid&quot;:&quot;8726517881660458944&quot;,&quot;social-retpath&quot;:&quot;https://contest.yandex.ru/i-social__closer.html&quot;,&quot;retpath&quot;:&quot;http://contest.yandex.ru/contest/35259/problems/N/&quot;,&quot;passport-msg&quot;:&quot;contest&quot;},&quot;i-ua&quot;:{},&quot;page&quot;:{}}"><div id="MathJax_Message" style="display: none;"></div><div class="page__head island"><div class="banners"></div><div class="header layout layout_type_serp i-bem header_js_inited" data-bem="{&quot;header&quot;:{}}" role="banner"><div class="header__main"><div class="layout__col layout__col_size_3 header__logo"><div class="logo2 logo2_lang_ru"><a class="logo2__yandex" href="https://www.yandex.ru/"><div class="logo2__text">Яндекс</div></a><a class="logo2__service" href="https://contest.yandex.ru/"><div class="logo2__text">Контест</div></a></div></div><div class="layout__col header__nav"><div class="dropdown-menu dropdown-menu_theme_ffffff lang-switcher inline-block i-bem" data-bem="{&quot;dropdown-menu&quot;:{},&quot;lang-switcher&quot;:{&quot;tune&quot;:&quot;http://tune.yandex.ru&quot;}}"><span class="lang-switcher__lang lang-switcher__lang_selected_yes link link_pseudo_yes dropdown-menu__switcher i-bem" data-bem="{&quot;link&quot;:{}}" role="button" tabindex="0"><div class="country-flag country-flag_s16_ru lang-switcher__flag"></div><span class="lang-switcher__lang-name">Русский</span></span><div class="popup popup_theme_ffffff popup_autoclosable_yes popup_adaptive_yes popup_animate_yes dropdown__popup lang-switcher__popup-content dropdown-menu__popup"><div class="popup__under"></div><i class="popup__tail"></i><div class="popup__content"><div class="b-menu-vert dropdown-menu__menu dropdown-menu__menu_theme_ffffff" role="menu"><ul class="b-menu-vert__layout"><li class="b-menu-vert__layout-unit b-menu-vert__layout-unit_position_first"><span class="lang-switcher__lang lang-switcher__lang_selected_yes"><div class="country-flag country-flag_s16_ru lang-switcher__flag"></div><span class="lang-switcher__lang-name">Русский</span></span></li><li class="b-menu-vert__layout-unit b-menu-vert__layout-unit_position_last"><a class="lang-switcher__lang" data-bem="{&quot;lang-switcher__lang&quot;:{&quot;lang&quot;:&quot;en&quot;,&quot;url&quot;:&quot;http://contest.yandex.ru/contest/35259/problems/N/?lang=en&quot;}}" href="http://contest.yandex.ru/contest/35259/problems/N/?lang=en" role="button" tabindex="0"><div class="country-flag country-flag_s16_gb lang-switcher__flag"></div><span class="lang-switcher__lang-name">Английский</span></a></li><li class="b-menu-vert__layout-unit lang-switcher__all"><a class="link" href="http://tune.yandex.ru/lang/">Ещё</a></li></ul></div></div></div></div><div class="dropdown-menu dropdown-menu_user_yes dropdown-menu_theme_ffffff i-bem dropdown-menu_js_inited" data-bem="{&quot;dropdown-menu&quot;:{}}"><a class="user user_menu_yes user_contest_yes i-bem user_js_inited" data-bem="{&quot;user&quot;:{&quot;domikMods&quot;:{&quot;logo&quot;:&quot;ru&quot;},&quot;url&quot;:&quot;https://passport.yandex.ru/auth?origin=contest&amp;retpath=http://contest.yandex.ru/contest/35259/problems/N/&quot;}}" href="https://passport.yandex.ru/passport?mode=passport" role="button" tabindex="0" aria-haspopup="true" aria-expanded="false"><span class="user__name" data-bem="{&quot;user__name&quot;:{&quot;maxLength&quot;:16,&quot;maxLengthRelative&quot;:3,&quot;isUglyUserName&quot;:false}}"><span class="user__first-letter">l</span>ansner1</span></a><div class="popup popup_theme_ffffff popup_autoclosable_yes popup_adaptive_yes popup_animate_yes dropdown__popup popup popup_fade-out_no popup_watch-scroll_no dropdown-menu__popup dropdown-menu__popup_user_yes i-bem popup_js_inited" data-bem="{&quot;popup&quot;:{&quot;directions&quot;:&quot;bottom-right&quot;}}"><i class="popup__tail"></i><div class="popup__content"><div class="b-menu-vert dropdown-menu__menu dropdown-menu__menu_theme_ffffff" role="menu"><ul class="b-menu-vert__layout"><li class="b-menu-vert__layout-unit b-menu-vert__layout-unit_position_first"><div class="b-menu-vert__item" role="menuitem"><a class="link" href="https://mail.yandex.ru/"><img class="image image_icon_mail" src="N.%20%D0%A1%D0%B8%D0%BB%D1%8C%D0%BD%D1%8B%D0%B9%20%D0%98%D0%98%20%D0%B1%D0%BB%D0%B8%D0%B7%D0%BA%D0%BE...%20%E2%80%94%20Python,%20CSC,%20%D0%BD%D0%B5%D0%B4%D0%B5%D0%BB%D1%8F%201%20%E2%80%94%20%D0%AF%D0%BD%D0%B4%D0%B5%D0%BA%D1%81_files/La6qi18Z8LwgnZdsAr1qy1GwCwo.gif" alt=""><span class="link__text user-menu-update i-bem user-menu-update_js_inited" data-bem="{&quot;user-menu-update&quot;:{}}">99+ новых писем</span></a></div></li><li class="b-menu-vert__layout-unit"><div class="b-menu-vert__item" role="menuitem"><a class="link" href="https://mail.yandex.ru/compose">Написать письмо</a></div></li><li class="b-menu-vert__layout-unit"><div class="b-menu-vert__item" role="menuitem"><a class="link" href="https://disk.yandex.ru/?source=main-loginmenu"><img class="image image_icon_disk" src="N.%20%D0%A1%D0%B8%D0%BB%D1%8C%D0%BD%D1%8B%D0%B9%20%D0%98%D0%98%20%D0%B1%D0%BB%D0%B8%D0%B7%D0%BA%D0%BE...%20%E2%80%94%20Python,%20CSC,%20%D0%BD%D0%B5%D0%B4%D0%B5%D0%BB%D1%8F%201%20%E2%80%94%20%D0%AF%D0%BD%D0%B4%D0%B5%D0%BA%D1%81_files/La6qi18Z8LwgnZdsAr1qy1GwCwo.gif" alt=""><span class="link__text">Мой Диск</span></a></div></li><li class="b-menu-vert__layout-unit"><div class="b-menu-vert__item b-menu-vert__item_separator_yes" role="menuitem"></div></li><li class="b-menu-vert__layout-unit"><div class="b-menu-vert__item" role="menuitem"><a class="link" href="http://tune.yandex.ru/">Настройка</a></div></li><li class="b-menu-vert__layout-unit"><div class="b-menu-vert__item" role="menuitem"><a class="link" href="https://passport.yandex.ru/">Паспорт</a></div></li><li class="b-menu-vert__layout-unit b-menu-vert__layout-unit_position_last"><div class="b-menu-vert__item" role="menuitem"><a class="link user user__logout i-bem user_js_inited" data-bem="{&quot;user&quot;:{&quot;_uniqId&quot;:&quot;user__logout&quot;}}" href="https://passport.yandex.ru/passport?mode=logout&amp;yu=8726517881660458944&amp;retpath=http%3A%2F%2Fcontest.yandex.ru%2Fcontest%2F35259%2Fproblems%2FN%2F">Выйти</a></div></li></ul></div></div></div></div></div></div></div><ul class="tabs-menu tabs-menu_role_sections tabs-menu_size_m tabs-menu_theme_normal tabs-menu_layout_horiz tabs-menu_type_stroked i-bem tabs-menu_js_inited" data-bem="{&quot;tabs-menu&quot;:{}}" role="menu"><div class="tabs-menu__inner"><li class="tabs-menu__tab tabs-menu__tab_first_yes"><a class="link" href="https://contest.yandex.ru/contest/3/enter/">Пробный контест</a></li><li class="tabs-menu__tab"><a class="link" href="https://contest.yandex.ru/contest-list/">Архив соревнований</a></li><li class="tabs-menu__tab"><a class="link" href="https://contest.yandex.ru/compilers/">Настройки компиляторов</a></li><li class="tabs-menu__tab"><a class="link" href="https://contest.yandex.ru/errors/">Значения ошибок</a></li><li class="tabs-menu__tab"><a class="link" href="https://contest.yandex.ru/teams/">Команды</a></li></div></ul></div><div class="page__main page__sect"><div class="content content_theme_contest island"><div class="contest-head"><div class="contest-head__item contest-head__item_role_title"><a class="link" href="https://contest.yandex.ru/contest/35259/enter/?retPage=">Python, CSC, неделя 1</a></div><div class="contest-head__item contest-head__item_role_status"><div class="status"><div class="status__props"><div class="status__prop"><div class="status__name inline-block"><img class="image image_type_clock" src="N.%20%D0%A1%D0%B8%D0%BB%D1%8C%D0%BD%D1%8B%D0%B9%20%D0%98%D0%98%20%D0%B1%D0%BB%D0%B8%D0%B7%D0%BA%D0%BE...%20%E2%80%94%20Python,%20CSC,%20%D0%BD%D0%B5%D0%B4%D0%B5%D0%BB%D1%8F%201%20%E2%80%94%20%D0%AF%D0%BD%D0%B4%D0%B5%D0%BA%D1%81_files/La6qi18Z8LwgnZdsAr1qy1GwCwo.gif" alt=""></div><div class="status__value inline-block"><time class="time-local i-bem time-local_js_inited" data-bem="{&quot;time-local&quot;:{&quot;timestamp&quot;:1660464898134}}">14&nbsp;авг 2022, 12:14:58</time></div></div><div class="status__prop"><div class="status__name inline-block">старт:</div><div class="status__value inline-block"><time class="time-local i-bem time-local_js_inited" data-bem="{&quot;time-local&quot;:{&quot;timestamp&quot;:1644565053000}}">11&nbsp;фев 2022, 11:37:33</time></div></div><div class="status__prop"><div class="status__name inline-block">финиш:</div><div class="status__value inline-block"><time class="time-local i-bem time-local_js_inited" data-bem="{&quot;time-local&quot;:{&quot;timestamp&quot;:1645645053000}}">23&nbsp;фев 2022, 23:37:33</time></div></div><div class="status__prop"><div class="status__name inline-block">длительность:</div><div class="status__value inline-block">12д.&nbsp;12ч.</div></div></div><div class="status__props"><div class="snippet snippet_hidden_yes status__snippet i-bem snippet_js_inited" data-bem="{&quot;snippet&quot;:{}}" id=":hidden-info:hidden-status"><div class="snippet__content"><div class="snippet__props"><div class="status__prop"><div class="status__name inline-block">начало:</div><div class="status__value inline-block"><time class="time-local i-bem time-local_js_inited" data-bem="{&quot;time-local&quot;:{&quot;timestamp&quot;:1644565053000}}">11&nbsp;фев 2022, 11:37:33</time></div></div><div class="status__prop"><div class="status__name inline-block">конец:</div><div class="status__value inline-block"><time class="time-local i-bem time-local_js_inited" data-bem="{&quot;time-local&quot;:{&quot;timestamp&quot;:1645645053000}}">23&nbsp;фев 2022, 23:37:33</time></div></div></div></div></div><span class="link link_pseudo_yes link_role_hidden-info i-bem link_js_inited" data-bem="{&quot;link&quot;:{}}" role="button" tabindex="0" id=":hidden-status"><span class="link__inner">...</span></span></div></div></div><div class="contest-head__item contest-head__item_role_aside"><div class="aside i-bem aside_js_inited" data-bem="{&quot;aside&quot;:{&quot;sk&quot;:&quot;u1e13da4938f737d14b4e157bd566e2e7&quot;,&quot;contestId&quot;:&quot;35259&quot;}}"><button class="button button_theme_pseudo button_pseudo_yes button_disabled_yes button_role_clarifications button_size_s aside__button i-bem button_js_inited" data-bem="{&quot;button&quot;:{}}" role="button" type="button" disabled="disabled"><span class="button__text">Объявления жюри</span></button><div class="popup popup_theme_ffffff popup_autoclosable_yes popup_adaptive_yes popup_animate_yes popup_role_message-box i-bem popup_js_inited" data-bem="{&quot;popup&quot;:{&quot;directions&quot;:{&quot;to&quot;:&quot;bottom&quot;,&quot;offset&quot;:{&quot;top&quot;:10}}}}"><i class="popup__tail"></i><div class="popup__content"><div class="popup__helper"></div></div></div></div></div></div><div class="msg msg_type_info msg_theme_island msg_pos_over-tabs"><img class="image msg__icon" src="N.%20%D0%A1%D0%B8%D0%BB%D1%8C%D0%BD%D1%8B%D0%B9%20%D0%98%D0%98%20%D0%B1%D0%BB%D0%B8%D0%B7%D0%BA%D0%BE...%20%E2%80%94%20Python,%20CSC,%20%D0%BD%D0%B5%D0%B4%D0%B5%D0%BB%D1%8F%201%20%E2%80%94%20%D0%AF%D0%BD%D0%B4%D0%B5%D0%BA%D1%81_files/La6qi18Z8LwgnZdsAr1qy1GwCwo.gif" alt="">Ваше участие в соревновании завершено. Дальнейшая отправка решений запрещена</div><ul class="tabs-menu tabs-menu_size_m tabs-menu_theme_normal tabs-menu_layout_horiz tabs-menu_role_contest tabs-menu_type_stroked i-bem tabs-menu_js_inited" data-bem="{&quot;tabs-menu&quot;:{}}" role="menu"><li class="tabs-menu__tab tabs-menu__tab_first_yes"><a class="link" href="https://contest.yandex.ru/contest/35259/standings/">Положение участников</a></li><li class="tabs-menu__tab tabs-menu__tab_active_yes"><a class="link" href="https://contest.yandex.ru/contest/35259/problems/">Задачи</a></li><li class="tabs-menu__tab"><a class="link" href="https://contest.yandex.ru/contest/35259/submits/">Посылки</a></li><li class="tabs-menu__tab"><a class="link" href="https://contest.yandex.ru/contest/35259/messages/">Сообщения</a></li><li class="tabs-menu__tab"><a class="link" href="https://contest.yandex.ru/contest/35259/participants/">Участники</a></li></ul><form class="problem problem_type_single problem_mode_one-button problem_contest-type_simple i-bem problem_js_inited" data-bem="{&quot;problem&quot;:{}}" action="/contest/35259/submit/" method="POST" enctype="multipart/form-data"><fieldset class="problem__item problem__item_disabled_yes" disabled="disabled"><div class="problem__statement text" data-bem="{&quot;problem__statement&quot;:{}}">
+<div class="problem-statement">
+   <div class="header">
+      <h1 class="title">N. Сильный ИИ близко...</h1>
+      <table>
+         <tbody><tr class="time-limit">
+            <td class="property-title">Ограничение времени</td>
+            <td>1&nbsp;секунда</td>
+         </tr>
+         <tr class="memory-limit">
+            <td class="property-title">Ограничение памяти</td>
+            <td>64Mb</td>
+         </tr>
+         <tr class="input-file">
+            <td class="property-title">Ввод</td>
+            <td colspan="1">стандартный ввод или input.txt</td>
+         </tr>
+         <tr class="output-file">
+            <td class="property-title">Вывод</td>
+            <td colspan="1">стандартный вывод или output.txt</td>
+         </tr>
+      </tbody></table>
+   </div>
+   <h2></h2>
+   <div class="legend"> Не все движки блогов, форумов, новостных сайтов 
+умеют правильно склонять существительные с числительными. Например «1 
+комментарий»,
+      «2 комментария», «125 комментариев» <br>
+      <br>Даже Хабр не смог: <br><img alt="PIC" src="N.%20%D0%A1%D0%B8%D0%BB%D1%8C%D0%BD%D1%8B%D0%B9%20%D0%98%D0%98%20%D0%B1%D0%BB%D0%B8%D0%B7%D0%BA%D0%BE...%20%E2%80%94%20Python,%20CSC,%20%D0%BD%D0%B5%D0%B4%D0%B5%D0%BB%D1%8F%201%20%E2%80%94%20%D0%AF%D0%BD%D0%B4%D0%B5%D0%BA%D1%81_files/statement-image.png"><!--l.
+      54-->
+      <p style="text-indent: 0em;">Напишите программу, которая умеет склонять с любыми числительными слово «комментарий». </p>
+      
+   </div>
+   <h2>Формат ввода</h2>
+   <div class="input-specification">
+      <div style="clear: both; font-family: monospace; text-align: left; white-space: nowrap;"> 7</div>
+      <!--l. 59-->
+      <p style="text-indent: 0em;">
+      </p>
+      
+   </div>
+   <h2>Формат вывода</h2>
+   <div class="output-specification">
+      <div style="clear: both; font-family: monospace; text-align: left; white-space: nowrap;"> комментариев</div>
+      <!--l. 64-->
+      <p style="text-indent: 0em;">
+      </p>
+      
+   </div>
+</div></div><a name="609/2021_02_15/AmPfWfTuMF"></a><div class="problem__messages"><div class="problem__available-message"></div></div><div class="problem__solution"><div class="solution solution_type_compiler-list i-bem solution_js_inited" data-bem="{&quot;solution&quot;:{&quot;id&quot;:&quot;609/2021_02_15/AmPfWfTuMF@compilerId&quot;,&quot;problemId&quot;:&quot;609/2021_02_15/AmPfWfTuMF&quot;,&quot;compilerId&quot;:&quot;python3_docker&quot;,&quot;maxFileSize&quot;:262144,&quot;validation&quot;:{}}}"><input type="hidden" name="609/2021_02_15/AmPfWfTuMF@compilerId" value="python3_docker"></div><div class="solution solution_type_group solution_selected_text i-bem solution_js_inited" data-bem="{&quot;solution&quot;:{&quot;id&quot;:&quot;609/2021_02_15/AmPfWfTuMF@solution&quot;,&quot;problemId&quot;:&quot;609/2021_02_15/AmPfWfTuMF&quot;,&quot;compilerId&quot;:&quot;python3_docker&quot;,&quot;maxFileSize&quot;:262144}}"><div class="solution__field solution__field_role_switcher"><span class="radio-button radio-button_size_s radio-button_theme_normal i-bem radio-button_js_inited" data-bem="{&quot;radio-button&quot;:{&quot;live&quot;:false}}"><label class="radio-button__radio radio-button__radio_checked_yes radio-button__radio_pressed_yes radio-button__radio_side_left" for="uniq166035328733518517"><input class="radio-button__control" value="text" checked="checked" id="uniq166035328733518517" type="radio" name="609/2021_02_15/AmPfWfTuMF@solution"><span class="radio-button__text">Набрать здесь</span></label><label class="radio-button__radio radio-button__radio_side_right radio-button__radio_next-for-pressed_yes" for="uniq166035328733518518"><input class="radio-button__control" value="file" id="uniq166035328733518518" type="radio" name="609/2021_02_15/AmPfWfTuMF@solution"><span class="radio-button__text">Отправить файл</span></label></span></div><div class="solution__field solution__field_role_panes"><div class="solution__pane solution__pane_name_text solution__pane_selected_yes"><span class="input input_type_textarea input_size_s input_role_code-type-text input_theme_normal i-bem input_js_inited" data-bem="{&quot;input&quot;:{&quot;live&quot;:false}}"><span class="input__box"><textarea class="input__control" id="uniq166035328733518519" name="609/2021_02_15/AmPfWfTuMF@text" aria-labelledby="labeluniq166035328733518519 hintuniq166035328733518519" rows="8" cols="10" style="display: none;">
+def inclination(n):
+    
+    I = ['комментарий', 'комментария', 'комментариев']
+    
+    if 0 &lt; abs(n)%1 &lt; 1:
+        return I[1]
+    
+    else:
+        
+        n = n % 100
+        
+        if 10 &lt;= n &lt;= 20:
+            return I[2]
+        
+        else:
+            
+            n = n % 10
+            
+            if n == 1:
+                return I[0]
+            
+            elif n == 2 or n == 3 or n == 4:
+                return I[1]
+            
+            else:
+                return I[2]
+                
+print(inclination(float(input())))
+
+</textarea><div class="CodeMirror cm-s-neat"><div style="overflow: hidden; position: relative; width: 3px; height: 0px; top: 4px; left: 33px;"><textarea style="position: absolute; padding: 0px; width: 1px; height: 1em; outline: currentcolor none medium;" autocorrect="off" autocapitalize="none" spellcheck="false" tabindex="0" wrap="off"></textarea></div><div class="CodeMirror-hscrollbar" style="left: 29px; min-height: 18px;"><div style="height: 100%; min-height: 1px; width: 0px;"></div></div><div class="CodeMirror-vscrollbar" style="bottom: 0px; min-width: 18px;"><div style="min-width: 1px; height: 0px;"></div></div><div class="CodeMirror-scrollbar-filler"></div><div class="CodeMirror-gutter-filler"></div><div class="CodeMirror-scroll" tabindex="-1" draggable="true"><div class="CodeMirror-sizer" style="margin-left: 29px; min-width: 430px; min-height: 411px;"><div style="position: relative; top: 0px;"><div class="CodeMirror-lines"><div style="position: relative; outline: currentcolor none medium;"><div class="CodeMirror-measure"><div style="width: 50px; height: 50px; overflow-x: scroll;"></div></div><div class="CodeMirror-measure"></div><div style="position: relative; z-index: 1;"></div><div class="CodeMirror-cursors"><div class="CodeMirror-cursor" style="left: 4px; top: 0px; height: 13px;">&nbsp;</div></div><div class="CodeMirror-code" style=""><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="position: absolute; left: -29px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 20px;">1</div></div><pre class=""><span><span>​</span></span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="position: absolute; left: -29px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 20px;">2</div></div><pre class=""><span><span class="cm-keyword">def</span> <span class="cm-def">inclination</span>(<span class="cm-variable">n</span>):</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="position: absolute; left: -29px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 20px;">3</div></div><pre class=""><span>    </span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="position: absolute; left: -29px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 20px;">4</div></div><pre class=""><span>    <span class="cm-variable">I</span> = [<span class="cm-string">'комментарий'</span>, <span class="cm-string">'комментария'</span>, <span class="cm-string">'комментариев'</span>]</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="position: absolute; left: -29px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 20px;">5</div></div><pre class=""><span>    </span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="position: absolute; left: -29px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 20px;">6</div></div><pre class=""><span>    <span class="cm-keyword">if</span> <span class="cm-number">0</span> <span class="cm-operator">&lt;</span> <span class="cm-builtin">abs</span>(<span class="cm-variable">n</span>)<span class="cm-operator">%</span><span class="cm-number">1</span> <span class="cm-operator">&lt;</span> <span class="cm-number">1</span>:</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="position: absolute; left: -29px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 20px;">7</div></div><pre class=""><span>        <span class="cm-keyword">return</span> <span class="cm-variable">I</span>[<span class="cm-number">1</span>]</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="position: absolute; left: -29px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 20px;">8</div></div><pre class=""><span>    </span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="position: absolute; left: -29px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 20px;">9</div></div><pre class=""><span>    <span class="cm-keyword">else</span>:</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="position: absolute; left: -29px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 20px;">10</div></div><pre class=""><span>        </span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="position: absolute; left: -29px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 20px;">11</div></div><pre class=""><span>        <span class="cm-variable">n</span> = <span class="cm-variable">n</span> <span class="cm-operator">%</span> <span class="cm-number">100</span></span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="position: absolute; left: -29px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 20px;">12</div></div><pre class=""><span>        </span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="position: absolute; left: -29px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 20px;">13</div></div><pre class=""><span>        <span class="cm-keyword">if</span> <span class="cm-number">10</span> <span class="cm-operator">&lt;=</span> <span class="cm-variable">n</span> <span class="cm-operator">&lt;=</span> <span class="cm-number">20</span>:</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="position: absolute; left: -29px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 20px;">14</div></div><pre class=""><span>            <span class="cm-keyword">return</span> <span class="cm-variable">I</span>[<span class="cm-number">2</span>]</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="position: absolute; left: -29px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 20px;">15</div></div><pre class=""><span>        </span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="position: absolute; left: -29px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 20px;">16</div></div><pre class=""><span>        <span class="cm-keyword">else</span>:</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="position: absolute; left: -29px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 20px;">17</div></div><pre class=""><span>            </span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="position: absolute; left: -29px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 20px;">18</div></div><pre class=""><span>            <span class="cm-variable">n</span> = <span class="cm-variable">n</span> <span class="cm-operator">%</span> <span class="cm-number">10</span></span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="position: absolute; left: -29px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 20px;">19</div></div><pre class=""><span>            </span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="position: absolute; left: -29px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 20px;">20</div></div><pre class=""><span>            <span class="cm-keyword">if</span> <span class="cm-variable">n</span> <span class="cm-operator">==</span> <span class="cm-number">1</span>:</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="position: absolute; left: -29px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 20px;">21</div></div><pre class=""><span>                <span class="cm-keyword">return</span> <span class="cm-variable">I</span>[<span class="cm-number">0</span>]</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="position: absolute; left: -29px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 20px;">22</div></div><pre class=""><span>            </span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="position: absolute; left: -29px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 20px;">23</div></div><pre class=""><span>            <span class="cm-keyword">elif</span> <span class="cm-variable">n</span> <span class="cm-operator">==</span> <span class="cm-number">2</span> <span class="cm-operator">or</span> <span class="cm-variable">n</span> <span class="cm-operator">==</span> <span class="cm-number">3</span> <span class="cm-operator">or</span> <span class="cm-variable">n</span> <span class="cm-operator">==</span> <span class="cm-number">4</span>:</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="position: absolute; left: -29px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 20px;">24</div></div><pre class=""><span>                <span class="cm-keyword">return</span> <span class="cm-variable">I</span>[<span class="cm-number">1</span>]</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="position: absolute; left: -29px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 20px;">25</div></div><pre class=""><span>            </span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="position: absolute; left: -29px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 20px;">26</div></div><pre class=""><span>            <span class="cm-keyword">else</span>:</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="position: absolute; left: -29px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 20px;">27</div></div><pre class=""><span>                <span class="cm-keyword">return</span> <span class="cm-variable">I</span>[<span class="cm-number">2</span>]</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="position: absolute; left: -29px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 20px;">28</div></div><pre class=""><span>                </span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="position: absolute; left: -29px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 20px;">29</div></div><pre class=""><span><span class="cm-keyword">print</span>(<span class="cm-variable">inclination</span>(<span class="cm-builtin">float</span>(<span class="cm-builtin">input</span>())))</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="position: absolute; left: -29px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 20px;">30</div></div><pre class=""><span><span>​</span></span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="position: absolute; left: -29px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 20px;">31</div></div><pre class=""><span><span>​</span></span></pre></div></div></div></div></div></div><div style="position: absolute; height: 30px; width: 1px; top: 411px;"></div><div class="CodeMirror-gutters" style="height: 411px;"><div class="CodeMirror-gutter CodeMirror-linenumbers" style="width: 28px;"></div></div></div></div><span class="input__clear input__clear_visibility_visible" unselectable="on"></span></span></span></div><div class="solution__pane solution__pane_name_file"><span class="attach attach_theme_normal attach_size_s attach_disabled_yes attach_role_code-type-attach attach_for_contest i-bem attach_js_inited" data-bem="{&quot;attach&quot;:{&quot;live&quot;:false}}"><span class="button button_theme_normal button_size_s button_disabled_yes attach__button i-bem" data-bem="{&quot;button&quot;:{}}"><span class="button__text" id="textuniq166035328733518520" aria-hidden="true">Выбрать</span><input class="attach__control button__control" type="file" name="609/2021_02_15/AmPfWfTuMF@file" id="uniq166035328733518520" aria-labelledby="textuniq166035328733518520" disabled="disabled"></span><span class="attach__holder attach__holder_state_hidden attach__holder_file_unknown" aria-hidden="true"><img class="image attach__icon-file" src="N.%20%D0%A1%D0%B8%D0%BB%D1%8C%D0%BD%D1%8B%D0%B9%20%D0%98%D0%98%20%D0%B1%D0%BB%D0%B8%D0%B7%D0%BA%D0%BE...%20%E2%80%94%20Python,%20CSC,%20%D0%BD%D0%B5%D0%B4%D0%B5%D0%BB%D1%8F%201%20%E2%80%94%20%D0%AF%D0%BD%D0%B4%D0%B5%D0%BA%D1%81_files/La6qi18Z8LwgnZdsAr1qy1GwCwo.gif" alt=""><span class="attach__text">Файл не выбран</span><img class="image attach__reset attach__reset_visibility_visible" src="N.%20%D0%A1%D0%B8%D0%BB%D1%8C%D0%BD%D1%8B%D0%B9%20%D0%98%D0%98%20%D0%B1%D0%BB%D0%B8%D0%B7%D0%BA%D0%BE...%20%E2%80%94%20Python,%20CSC,%20%D0%BD%D0%B5%D0%B4%D0%B5%D0%BB%D1%8F%201%20%E2%80%94%20%D0%AF%D0%BD%D0%B4%D0%B5%D0%BA%D1%81_files/La6qi18Z8LwgnZdsAr1qy1GwCwo.gif" alt=""></span></span></div></div></div></div></fieldset><div class="problem__send"><input type="hidden" name="sk" value="u1e13da4938f737d14b4e157bd566e2e7"><input type="hidden" name="retpath" value="https://contest.yandex.ru/contest/35259/problems/N/#609/2021_02_15/AmPfWfTuMF"><button class="button button_theme_action button_size_s button_role_submit button_disabled_yes i-bem" data-bem="{&quot;button&quot;:{}}" role="button" type="submit" disabled="disabled"><span class="button__text">Отправить</span></button></div><div class="problem__attempts"><div class="msg msg_type_info"><img class="image msg__icon" src="N.%20%D0%A1%D0%B8%D0%BB%D1%8C%D0%BD%D1%8B%D0%B9%20%D0%98%D0%98%20%D0%B1%D0%BB%D0%B8%D0%B7%D0%BA%D0%BE...%20%E2%80%94%20Python,%20CSC,%20%D0%BD%D0%B5%D0%B4%D0%B5%D0%BB%D1%8F%201%20%E2%80%94%20%D0%AF%D0%BD%D0%B4%D0%B5%D0%BA%D1%81_files/La6qi18Z8LwgnZdsAr1qy1GwCwo.gif" alt=""><img class="image msg__icon" src="N.%20%D0%A1%D0%B8%D0%BB%D1%8C%D0%BD%D1%8B%D0%B9%20%D0%98%D0%98%20%D0%B1%D0%BB%D0%B8%D0%B7%D0%BA%D0%BE...%20%E2%80%94%20Python,%20CSC,%20%D0%BD%D0%B5%D0%B4%D0%B5%D0%BB%D1%8F%201%20%E2%80%94%20%D0%AF%D0%BD%D0%B4%D0%B5%D0%BA%D1%81_files/La6qi18Z8LwgnZdsAr1qy1GwCwo.gif" alt="">осталось 20 попыток</div></div><div class="problem__problems-nav"><span class="problem__problems-nav-left"><a class="button button_theme_normal button_size_s i-bem" data-bem="{&quot;button&quot;:{}}" role="button" href="https://contest.yandex.ru/contest/35259/problems/M/"><span class="button__text">Предыдущая</span></a></span><span class="problem__problems-nav-right"><a class="button button_theme_normal button_size_s i-bem" data-bem="{&quot;button&quot;:{}}" role="button" href="https://contest.yandex.ru/contest/35259/problems/O/"><span class="button__text">Следующая</span></a></span></div></form><ul class="tabs-menu tabs-menu_theme_normal tabs-menu_layout_vert tabs-menu_size_m tabs-menu_role_problems inline-block i-bem tabs-menu_js_inited" data-bem="{&quot;tabs-menu&quot;:{}}" role="menu"><li class="tabs-menu__tab tabs-menu__tab_first_yes"><a class="link" href="https://contest.yandex.ru/contest/35259/problems/A/"><span class="tabs-menu__tab-content-text">A. Гипотеза Коллатца</span></a><div class="submit-status submit-status_size_small submit-status_verdict_OK submit-status_mood_success popupable i-bem" data-bem="{&quot;popupable&quot;:{&quot;hover&quot;:true,&quot;popupParams&quot;:{&quot;directions&quot;:&quot;top&quot;}}}" title="OK"><a class="link" href="https://contest.yandex.ru/contest/35259/problems/A/"></a><a class="link image image_type_success" href="https://contest.yandex.ru/contest/35259/run-report/65087950/">&amp;nbsp;</a></div></li><li class="tabs-menu__tab"><a class="link" href="https://contest.yandex.ru/contest/35259/problems/B/"><span class="tabs-menu__tab-content-text">B. Степень</span></a><div class="submit-status submit-status_size_small submit-status_verdict_OK submit-status_mood_success popupable i-bem" data-bem="{&quot;popupable&quot;:{&quot;hover&quot;:true,&quot;popupParams&quot;:{&quot;directions&quot;:&quot;top&quot;}}}" title="OK"><a class="link" href="https://contest.yandex.ru/contest/35259/problems/B/"></a><a class="link image image_type_success" href="https://contest.yandex.ru/contest/35259/run-report/65233715/">&amp;nbsp;</a></div></li><li class="tabs-menu__tab"><a class="link" href="https://contest.yandex.ru/contest/35259/problems/C/"><span class="tabs-menu__tab-content-text">C. Лес</span></a><div class="submit-status submit-status_size_small submit-status_verdict_OK submit-status_mood_success popupable i-bem" data-bem="{&quot;popupable&quot;:{&quot;hover&quot;:true,&quot;popupParams&quot;:{&quot;directions&quot;:&quot;top&quot;}}}" title="OK"><a class="link" href="https://contest.yandex.ru/contest/35259/problems/C/"></a><a class="link image image_type_success" href="https://contest.yandex.ru/contest/35259/run-report/65312087/">&amp;nbsp;</a></div></li><li class="tabs-menu__tab"><a class="link" href="https://contest.yandex.ru/contest/35259/problems/D/"><span class="tabs-menu__tab-content-text">D. Скока-скока?</span></a><div class="submit-status submit-status_size_small submit-status_verdict_OK submit-status_mood_success popupable i-bem" data-bem="{&quot;popupable&quot;:{&quot;hover&quot;:true,&quot;popupParams&quot;:{&quot;directions&quot;:&quot;top&quot;}}}" title="OK"><a class="link" href="https://contest.yandex.ru/contest/35259/problems/D/"></a><a class="link image image_type_success" href="https://contest.yandex.ru/contest/35259/run-report/65311478/">&amp;nbsp;</a></div></li><li class="tabs-menu__tab"><a class="link" href="https://contest.yandex.ru/contest/35259/problems/E/"><span class="tabs-menu__tab-content-text">E. Повторите!</span></a><div class="submit-status submit-status_size_small submit-status_verdict_OK submit-status_mood_success popupable i-bem" data-bem="{&quot;popupable&quot;:{&quot;hover&quot;:true,&quot;popupParams&quot;:{&quot;directions&quot;:&quot;top&quot;}}}" title="OK"><a class="link" href="https://contest.yandex.ru/contest/35259/problems/E/"></a><a class="link image image_type_success" href="https://contest.yandex.ru/contest/35259/run-report/65311563/">&amp;nbsp;</a></div></li><li class="tabs-menu__tab"><a class="link" href="https://contest.yandex.ru/contest/35259/problems/F/"><span class="tabs-menu__tab-content-text">F. Заголовок</span></a><div class="submit-status submit-status_size_small submit-status_verdict_OK submit-status_mood_success popupable i-bem" data-bem="{&quot;popupable&quot;:{&quot;hover&quot;:true,&quot;popupParams&quot;:{&quot;directions&quot;:&quot;top&quot;}}}" title="OK"><a class="link" href="https://contest.yandex.ru/contest/35259/problems/F/"></a><a class="link image image_type_success" href="https://contest.yandex.ru/contest/35259/run-report/65312912/">&amp;nbsp;</a></div></li><li class="tabs-menu__tab"><a class="link" href="https://contest.yandex.ru/contest/35259/problems/G/"><span class="tabs-menu__tab-content-text">G. Нумерация</span></a><div class="submit-status submit-status_size_small submit-status_verdict_OK submit-status_mood_success popupable i-bem" data-bem="{&quot;popupable&quot;:{&quot;hover&quot;:true,&quot;popupParams&quot;:{&quot;directions&quot;:&quot;top&quot;}}}" title="OK"><a class="link" href="https://contest.yandex.ru/contest/35259/problems/G/"></a><a class="link image image_type_success" href="https://contest.yandex.ru/contest/35259/run-report/65390543/">&amp;nbsp;</a></div></li><li class="tabs-menu__tab"><a class="link" href="https://contest.yandex.ru/contest/35259/problems/H/"><span class="tabs-menu__tab-content-text">H. Итого</span></a><div class="submit-status submit-status_size_small submit-status_verdict_OK submit-status_mood_success popupable i-bem" data-bem="{&quot;popupable&quot;:{&quot;hover&quot;:true,&quot;popupParams&quot;:{&quot;directions&quot;:&quot;top&quot;}}}" title="OK"><a class="link" href="https://contest.yandex.ru/contest/35259/problems/H/"></a><a class="link image image_type_success" href="https://contest.yandex.ru/contest/35259/run-report/65391088/">&amp;nbsp;</a></div></li><li class="tabs-menu__tab"><a class="link" href="https://contest.yandex.ru/contest/35259/problems/I/"><span class="tabs-menu__tab-content-text">I. Быстрый дозвон</span></a><div class="submit-status submit-status_size_small submit-status_verdict_OK submit-status_mood_success popupable i-bem" data-bem="{&quot;popupable&quot;:{&quot;hover&quot;:true,&quot;popupParams&quot;:{&quot;directions&quot;:&quot;top&quot;}}}" title="OK"><a class="link" href="https://contest.yandex.ru/contest/35259/problems/I/"></a><a class="link image image_type_success" href="https://contest.yandex.ru/contest/35259/run-report/65385625/">&amp;nbsp;</a></div></li><li class="tabs-menu__tab"><a class="link" href="https://contest.yandex.ru/contest/35259/problems/J/"><span class="tabs-menu__tab-content-text">J. ДНК-статистика</span></a><div class="submit-status submit-status_size_small submit-status_verdict_OK submit-status_mood_success popupable i-bem" data-bem="{&quot;popupable&quot;:{&quot;hover&quot;:true,&quot;popupParams&quot;:{&quot;directions&quot;:&quot;top&quot;}}}" title="OK"><a class="link" href="https://contest.yandex.ru/contest/35259/problems/J/"></a><a class="link image image_type_success" href="https://contest.yandex.ru/contest/35259/run-report/65395432/">&amp;nbsp;</a></div></li><li class="tabs-menu__tab"><a class="link" href="https://contest.yandex.ru/contest/35259/problems/K/"><span class="tabs-menu__tab-content-text">K. Меню</span></a><div class="submit-status submit-status_size_small submit-status_verdict_OK submit-status_mood_success popupable i-bem" data-bem="{&quot;popupable&quot;:{&quot;hover&quot;:true,&quot;popupParams&quot;:{&quot;directions&quot;:&quot;top&quot;}}}" title="OK"><a class="link" href="https://contest.yandex.ru/contest/35259/problems/K/"></a><a class="link image image_type_success" href="https://contest.yandex.ru/contest/35259/run-report/65395697/">&amp;nbsp;</a></div></li><li class="tabs-menu__tab"><a class="link" href="https://contest.yandex.ru/contest/35259/problems/L/"><span class="tabs-menu__tab-content-text">L. Штрих-код</span></a><div class="submit-status submit-status_size_small submit-status_verdict_OK submit-status_mood_success popupable i-bem" data-bem="{&quot;popupable&quot;:{&quot;hover&quot;:true,&quot;popupParams&quot;:{&quot;directions&quot;:&quot;top&quot;}}}" title="OK"><a class="link" href="https://contest.yandex.ru/contest/35259/problems/L/"></a><a class="link image image_type_success" href="https://contest.yandex.ru/contest/35259/run-report/65396702/">&amp;nbsp;</a></div></li><li class="tabs-menu__tab"><a class="link" href="https://contest.yandex.ru/contest/35259/problems/M/"><span class="tabs-menu__tab-content-text">M. Делители числа</span></a><div class="submit-status submit-status_size_small submit-status_verdict_OK submit-status_mood_success popupable i-bem" data-bem="{&quot;popupable&quot;:{&quot;hover&quot;:true,&quot;popupParams&quot;:{&quot;directions&quot;:&quot;top&quot;}}}" title="OK"><a class="link" href="https://contest.yandex.ru/contest/35259/problems/M/"></a><a class="link image image_type_success" href="https://contest.yandex.ru/contest/35259/run-report/65438998/">&amp;nbsp;</a></div></li><li class="tabs-menu__tab tabs-menu__tab_active_yes"><a class="link" href="https://contest.yandex.ru/contest/35259/problems/N/"><span class="tabs-menu__tab-content-text">N. Сильный ИИ близко...</span></a><div class="submit-status submit-status_size_small submit-status_verdict_OK submit-status_mood_success popupable i-bem" data-bem="{&quot;popupable&quot;:{&quot;hover&quot;:true,&quot;popupParams&quot;:{&quot;directions&quot;:&quot;top&quot;}}}" title="OK"><a class="link" href="https://contest.yandex.ru/contest/35259/problems/N/"></a><a class="link image image_type_success" href="https://contest.yandex.ru/contest/35259/run-report/65437899/">&amp;nbsp;</a></div></li><li class="tabs-menu__tab"><a class="link" href="https://contest.yandex.ru/contest/35259/problems/O/"><span class="tabs-menu__tab-content-text">O. Спираль</span></a><div class="submit-status submit-status_size_small submit-status_verdict_OK submit-status_mood_success popupable i-bem" data-bem="{&quot;popupable&quot;:{&quot;hover&quot;:true,&quot;popupParams&quot;:{&quot;directions&quot;:&quot;top&quot;}}}" title="OK"><a class="link" href="https://contest.yandex.ru/contest/35259/problems/O/"></a><a class="link image image_type_success" href="https://contest.yandex.ru/contest/35259/run-report/65403125/">&amp;nbsp;</a></div></li></ul><div class="table__hook"><table class="table table_role_submits i-bem table_js_inited" data-bem="{&quot;table&quot;:{&quot;isHelloBoardContest&quot;:false,&quot;ajax&quot;:{&quot;noProblemsLinks&quot;:true},&quot;done&quot;:true}}"><thead class="table__head"><tr class="table__row"><th class="table__header">Время посылки</th><th class="table__header">ID</th><th class="table__header">Задача</th><th class="table__header">Компилятор</th><th class="table__header">Вердикт</th><th class="table__header">Тип посылки</th><th class="table__header">Время</th><th class="table__header">Память</th><th class="table__header">Тест</th><th class="table__header">Баллы</th><th class="table__header"></th></tr></thead><tbody class="table__body"><tr class="table__row"><td class="table__cell"><div class="table__data table__data_type_time"><time class="time-local i-bem time-local_js_inited" data-bem="{&quot;time-local&quot;:{&quot;timestamp&quot;:1645560758000}}">23&nbsp;фев 2022, 00:12:38</time></div></td><td class="table__cell">65437899</td><td class="table__cell"><div class="table__data popupable i-bem" data-bem="{&quot;popupable&quot;:{&quot;hover&quot;:true,&quot;popupParams&quot;:{&quot;directions&quot;:&quot;top&quot;}}}" title="Сильный ИИ близко...">N</div></td><td class="table__cell">Python 3.10.1</td><td class="table__cell"><div class="table__data table__data_mood_pos"><a class="link" href="https://contest.yandex.ru/contest/35259/run-report/65437899/">OK</a></div></td><td class="table__cell">-</td><td class="table__cell"><div class="table__data table__data_type_time">41ms</div></td><td class="table__cell"><div class="table__data table__data_type_time">3.95Mb</div></td><td class="table__cell">-</td><td class="table__cell">-</td><td class="table__cell"><div class="table__data"><a class="link" href="https://contest.yandex.ru/contest/35259/run-report/65437899/">отчёт</a></div></td></tr><tr class="table__row"><td class="table__cell"><div class="table__data table__data_type_time"><time class="time-local i-bem time-local_js_inited" data-bem="{&quot;time-local&quot;:{&quot;timestamp&quot;:1645560067000}}">23&nbsp;фев 2022, 00:01:07</time></div></td><td class="table__cell">65437571</td><td class="table__cell"><div class="table__data popupable i-bem" data-bem="{&quot;popupable&quot;:{&quot;hover&quot;:true,&quot;popupParams&quot;:{&quot;directions&quot;:&quot;top&quot;}}}" title="Сильный ИИ близко...">N</div></td><td class="table__cell">Python 3.10.1</td><td class="table__cell"><div class="table__data table__data_mood_neg popupable i-bem" data-bem="{&quot;popupable&quot;:{&quot;hover&quot;:true,&quot;popupParams&quot;:{&quot;directions&quot;:&quot;top&quot;}}}" title="Неверный ответ"><a class="link" href="https://contest.yandex.ru/contest/35259/run-report/65437571/">WA</a></div></td><td class="table__cell">-</td><td class="table__cell"><div class="table__data table__data_type_time">42ms</div></td><td class="table__cell"><div class="table__data table__data_type_time">3.95Mb</div></td><td class="table__cell">3</td><td class="table__cell">-</td><td class="table__cell"><div class="table__data"><a class="link" href="https://contest.yandex.ru/contest/35259/run-report/65437571/">отчёт</a></div></td></tr></tbody></table></div></div></div><div class="page__foot"><div class="footer clearfix" role="contentinfo"><div class="footer__column"><a class="link footer__link" href="https://yandex.ru/support/contest/index.html">Справка</a><a class="link footer__link" href="https://yandex.ru/support/contest/troubleshooting.xml?form1580-cntst_link=http%3A%2F%2Fcontest.yandex.ru%2Fcontest%2F35259%2Fproblems%2FN%2F&amp;form1580-cntst_login=lansner1">Обратная связь</a><a class="link footer__link" href="https://yandex.ru/legal/contest_termsofuse/">Пользовательское соглашение</a></div><div class="footer__column footer__column_side_right"><div class="copyright">©&nbsp;2013–2022&nbsp;&nbsp;ООО «<a class="copyright__link footer__link" href="http://www.yandex.ru/">Яндекс</a>»</div></div></div></div><i class="b-statcounter"><i class="b-statcounter__metrika b-statcounter__metrika_type_js i-bem b-statcounter__metrika_js_inited" data-bem="{&quot;b-statcounter__metrika&quot;:{&quot;id&quot;:16150693}}"><noscript><img alt="" src="//mc.yandex.ru/watch/16150693"/></noscript></i></i></body><script type="text/javascript" async="async" src="N.%20%D0%A1%D0%B8%D0%BB%D1%8C%D0%BD%D1%8B%D0%B9%20%D0%98%D0%98%20%D0%B1%D0%BB%D0%B8%D0%B7%D0%BA%D0%BE...%20%E2%80%94%20Python,%20CSC,%20%D0%BD%D0%B5%D0%B4%D0%B5%D0%BB%D1%8F%201%20%E2%80%94%20%D0%AF%D0%BD%D0%B4%D0%B5%D0%BA%D1%81_files/watch.js"></script></html>

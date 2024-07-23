@@ -1,0 +1,26 @@
+<project>
+	<modelVersion>4.0.0</modelVersion>
+
+	<groupId>com.example.app</groupId>
+	<artifactId>my-app</artifactId>
+	<version>1</version>			
+
+	<dependencies>
+		
+		<!-- https://mvnrepository.com/artifact/org.uma.jmetal/jmetal-core -->
+		<dependency>
+			<groupId>org.uma.jmetal</groupId>
+			<artifactId>jmetal-core</artifactId>
+			<version>5.11</version>
+		</dependency>
+
+		<!-- https://mvnrepository.com/artifact/org.uma.jmetal/jmetal-algorithm -->
+		<dependency>
+			<groupId>org.uma.jmetal</groupId>
+			<artifactId>jmetal-algorithm</artifactId>
+			<version>5.11</version>
+		</dependency>
+	</dependencies>
+		
+	
+</project>

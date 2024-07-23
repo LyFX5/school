@@ -1,0 +1,156 @@
+@relation qqdefects.arff
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% This is a PROMISE Software Engineering Repository data set made publicly
+% available in order to encourage repeatable, verifiable, refutable, and/or
+% improvable predictive models of software engineering.
+%
+% If you publish material based on PROMISE data sets then, please
+% follow the acknowledgment guidelines posted on the PROMISE repository
+% web page http://promisedata.org/repository .
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% (c) 2007  Norman Fenton
+% This data set is distributed under the
+% Creative Commons Attribution-Share Alike 3.0 License
+% http://creativecommons.org/licenses/by-sa/3.0/
+%
+% You are free:
+%
+%    * to Share -- copy, distribute and transmit the work
+%    * to Remix -- to adapt the work
+%
+% Under the following conditions:
+%
+% Attribution. You must attribute the work in the manner specified by
+% the author or licensor (but not in any way that suggests that they endorse
+% you or your use of the work).
+%
+% Share Alike. If you alter, transform, or build upon this work, you
+% may distribute the resulting work only under the same, similar or a 
+% compatible license.
+%
+%    * For any reuse or distribution, you must make clear to others the 
+%      license terms of this work.
+%    * Any of the above conditions can be waived if you get permission from 
+%      the copyright holder.
+%    * Apart from the remix rights granted under this license, nothing in 
+%      this license impairs or restricts the author's moral rights.
+%
+
+% Qualitative and quantitative data about 31 projects completed in a
+% consumer electronics company (one row per project).
+% There
+% is a mixture of qualitative attributes (these are measured on a 5
+% point ranked scale VL, L, M, H, VH) and quantitative attributes
+% whose scale is stated.
+
+% from..
+% Title:
+%    Project Data Incorporating Qualitative Factors for Improved Software Defect;
+% Author(s):
+%    Norman Fenton and Martin Neil and William Marsh and Peter Hearty and Lukasz Radlinski and Paul Krause; 
+% Published in:
+%    in Proceedings of the PROMISE workshop;
+% Year:
+%    2007; 
+
+% attributes:
+% S1	Relevant Experience of Spec & Doc Staff
+% S2	Quality of Documentation inspected
+% S3	Regularity of Spec & Doc Reviews
+% S4	Standard Procedures Followed
+% S5	Quality of Documentation inspected
+% S6	Spec Defects Discovered in Review
+% S7	Requirements Stability
+% F1	Complexity of new functionality
+% F2	Scale of New functionality implemented
+% F3	Total no. of Inputs and Outputs
+% D1	Relevant Development Staff Experience
+% D2	Programmer capability
+% D3	Defined processes followed
+% D4	Development Staff motivation
+% T1	Testing Process Well Defined
+% T2	Testing Staff Experience
+% T3	Testing Staff Experience
+% T4	Quality of Documented Test Cases
+% P1	Dev. Staff Training Quality
+% P2	Requirements Management
+% P3	Project Planning
+% P4	Scale of Distributed Communication
+% P5	Stake-holder involvement
+% P6	Stake-holder involvement
+% P7	Vendor Management
+% P8	Internal communication/interaction
+% P9	Process Maturity
+% E	Total Effort
+% K	KLOC
+% L	Language
+% TD	Testing Defects (Pre+ Post)
+
+@attribute S1 {H,L,VH,M}
+@attribute S2 {M,H,L,VH}
+@attribute S3 {VH,M,H}
+@attribute S4 {H,L,M,VL}
+@attribute S5 {M,H,L,VH}
+@attribute S6 {H,VH,L,M}
+@attribute S7 {L,H,M,VH,VL}
+@attribute F1 {M,L,H,VH}
+@attribute F2 {L,VL,H,M,VH}
+@attribute F3 {M,VH,H}
+@attribute D1 {L,H,M,VH,VL}
+@attribute D2 {H,VH,M,VL,L}
+@attribute D3 {H,L,M,VH}
+@attribute D4 {H,VH,M}
+@attribute T1 {M,H,VL}
+@attribute T2 {H,VL,M,VH,L}
+@attribute T3 {L,H,VL,M,VH}
+@attribute T4 {H,L,M}
+@attribute P1 {VH,H,L,M}
+@attribute P2 {H,VH,M}
+@attribute P3 {H,VL,VH,M,L}
+@attribute P4 {L,M,VL,H}
+@attribute P5 {H,VH,M}
+@attribute P6 {M,VH,H}
+@attribute P7 {M,L,H}
+@attribute P8 {VH,H,M}
+@attribute P9 {H,VH,M}
+@attribute E numeric
+@attribute K numeric
+@attribute L {C,VC++MFC}
+@attribute TD numeric
+
+@data
+
+H,M,VH,H,M,H,L,M,L,M,L,H,H,H,M,H,L,H,VH,H,H,L,H,M,?,VH,H,7108.82,6.02,C,148
+H,H,VH,H,M,H,H,L,VL,M,L,H,H,H,H,H,L,H,VH,H,H,L,H,M,?,VH,H,1308.08,0.897,C,31
+H,H,VH,H,H,VH,H,H,H,VH,H,VH,H,VH,H,H,H,H,H,VH,H,?,VH,VH,?,VH,VH,18170,53.858,C,209
+L,L,M,L,L,L,L,M,L,M,L,M,L,M,VL,VL,VL,L,L,M,VL,L,M,M,M,H,M,7006,?,C,228
+H,M,H,M,H,?,M,H,H,VH,L,M,H,H,M,M,L,M,H,H,H,M,M,H,L,VH,M,9434,14,C,373
+VH,M,VH,M,H,?,H,M,M,VH,M,H,M,M,H,?,M,M,H,H,H,M,M,VH,L,VH,H,9440.95,14,C,167
+L,M,VH,H,H,L,M,L,VL,M,M,VH,H,H,H,M,M,H,H,H,VH,VL,VH,VH,?,H,VH,13888.26667,21,C,204
+M,M,H,M,H,L,H,M,L,M,H,H,M,M,H,M,M,M,M,H,H,VL,H,H,?,H,H,8822,5.794,C,53
+H,VH,VH,H,VH,M,VH,L,L,M,H,VH,VH,H,H,VH,VH,H,VH,VH,VH,L,VH,VH,?,VH,VH,2192,2.474,VC++MFC,17
+H,H,H,M,H,M,H,M,L,M,H,H,H,H,H,M,M,M,H,H,H,VL,H,H,?,M,H,4410,4.843,C,29
+H,M,H,M,H,H,H,H,H,H,H,H,H,H,H,H,M,M,H,H,H,VL,H,H,?,M,M,14196,4.371,C,71
+H,M,H,M,M,M,L,H,H,H,VH,M,M,H,H,H,M,M,H,H,H,L,H,H,?,M,H,13387.5,18.995,C,90
+VH,M,M,L,M,H,L,H,H,H,H,H,H,H,M,M,L,M,M,H,H,VL,H,M,H,M,M,25449.6,49.097,C,129
+H,H,H,H,H,H,H,VH,H,H,H,H,H,H,H,H,H,H,H,H,H,?,H,H,?,H,H,33472,58.3,C,672
+H,H,H,H,H,VH,VL,H,H,M,H,H,H,H,M,H,M,M,VH,M,H,M,VH,VH,?,VH,H,34892.65,154,C,1768
+H,H,H,H,H,H,M,L,VL,M,H,H,H,H,M,H,M,M,VH,M,H,M,VH,VH,?,VH,H,7121,26.67,C,109
+VH,H,M,L,H,H,M,L,VL,M,M,M,H,H,M,L,L,H,M,M,M,M,M,H,?,H,M,13680,33,C,688
+M,H,H,H,H,VH,VL,VH,VH,H,M,H,H,H,H,H,M,M,VH,M,H,H,VH,VH,?,VH,H,32365.98,155.2,C,1906
+H,M,H,H,H,H,M,H,H,H,H,H,H,H,H,M,M,H,M,H,H,L,H,H,?,H,H,12387.65,87,C,476
+L,L,M,VL,L,M,VL,VH,H,VH,VL,VL,L,H,VL,VL,VH,H,H,M,L,H,H,M,?,H,H,52660,50,C,928
+H,H,H,M,L,M,M,L,M,VH,H,H,H,H,H,H,H,H,H,H,H,H,H,H,?,H,H,18748,22,C,196
+L,L,M,M,M,M,L,M,M,VH,H,M,L,H,H,M,M,H,H,H,M,H,H,H,?,H,H,28206,44,C,184
+M,H,VH,H,L,M,M,H,VH,VH,L,H,H,H,H,H,H,H,H,H,H,H,H,M,?,H,H,53995,61,C,680
+M,M,M,H,M,H,L,M,M,H,M,H,H,M,H,M,M,M,H,H,M,L,M,H,?,VH,H,24895,99,C,1597
+M,H,?,H,M,M,M,H,VL,H,M,H,M,H,VL,M,H,L,M,M,M,M,M,M,M,H,H,6905.75,23,C,546
+M,M,H,M,H,H,H,M,H,M,L,M,M,M,M,L,H,M,L,M,M,L,H,H,L,H,M,1642,?,C,261
+H,M,VH,M,M,VH,M,H,VH,VH,M,L,M,H,M,M,M,M,H,M,L,L,M,H,H,H,M,14602,52,C,412
+H,L,VH,M,M,M,L,VH,VH,VH,M,L,H,H,M,M,M,M,H,M,L,L,M,M,?,H,M,8581,36,C,881
+H,M,VH,H,M,M,VH,M,M,H,VH,VH,H,H,H,VH,VH,H,M,H,H,L,VH,VH,?,H,H,3764,11,C,91
+H,H,VH,H,H,M,VH,L,L,M,H,H,H,H,H,H,H,H,M,H,H,L,VH,VH,?,H,H,1976,1,C,5
+?,H,H,M,M,H,M,M,M,H,H,H,H,H,M,H,M,M,H,H,H,H,VH,VH,?,VH,VH,15691,33,C,653

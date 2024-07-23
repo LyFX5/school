@@ -1,0 +1,20 @@
+{% extends 'base.html' %}
+
+{% block title %}
+The Main Page
+{% endblock %}
+
+{% block body %}
+<div class="container mt-5">
+  <h1>Здравствуйте !</h1>
+  <h1>Сервис позволяет произодить поиск по слову в базе данных видео TED Talks.
+    Введите пожалуйста интересующее слово.
+  </h1>
+    <form method = "post">
+      <input type="text" name="wanted_word" id="wanted_word_id" class="form-control"><br>
+    </form>
+</div>
+{% block contents %}{% endblock %}
+{% endblock %}
+
+

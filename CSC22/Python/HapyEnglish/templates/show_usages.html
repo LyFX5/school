@@ -1,0 +1,22 @@
+
+{% extends 'find_usage_of_text.html' %}
+
+{% block contents %}
+<div class="container mt-5">
+
+    {% if rows == 0 %}
+        <div class="alert">
+            <h2> Результаты не найдены. Попробуйте другое слово. </h2>
+        </div>
+    {% else %}
+        {% for row in rows %}
+            <div class="alert">
+                <video width="400" height="300" controls="controls">
+                    <source src="{{row[0]}}#t={{row[1]}},{{row[2]}}" type='video/mp4'>
+                </video>
+                <h3>{{row[3]}}</h3>
+            </div>
+        {% endfor %}
+    {% endif %}
+</div>
+{% endblock %}
